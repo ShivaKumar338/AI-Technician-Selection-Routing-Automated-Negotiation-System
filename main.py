@@ -4,6 +4,7 @@ import math
 import os
 import random
 import re
+import sys
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -14,6 +15,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from supabase._async.client import AsyncClient, create_client as async_create_client
+
+from routers.whatsapp_router import router as whatsapp_router
 
 load_dotenv()
 
@@ -37,8 +40,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(whatsapp_router)
+
 _supabase: Optional[AsyncClient] = None
 _gemini_model: Optional[Any] = None
+
+
+@app.on_event("startup")
+async def startup():
+    global _supabase
+    if is_configured(SUPABASE_URL) and is_configured(SUPABASE_KEY):
+        _supabase = await async_create_client(SUPABASE_URL, SUPABASE_KEY)
+        app.state.supabase = _supabase
+    from services.whatsapp_negotiator import get_whatsapp
+    asyncio.create_task(get_whatsapp().start())
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    from services.whatsapp_negotiator import get_whatsapp
+    await get_whatsapp().stop()
+
 
 NEGOTIATION_ROUNDS = 4
 CONVERGENCE_THRESHOLD = 0.15

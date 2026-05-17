@@ -1,11 +1,9 @@
-import { Star, MapPin, BadgeCheck } from "lucide-react";
+import { Star, MapPin, BadgeCheck, MessageCircle } from "lucide-react";
 import { formatScore } from "../../utils/format";
 
-export default function MatchResults({ matches, onNegotiate, negotiatingId }) {
+export default function MatchResults({ matches, onWhatsApp, whatsappId }) {
   if (!matches?.length) {
-    return (
-      <p className="text-sm text-muted">Submit a job to see ranked matches here.</p>
-    );
+    return <p className="text-sm text-muted">Submit a job to see ranked matches here.</p>;
   }
 
   return (
@@ -28,15 +26,18 @@ export default function MatchResults({ matches, onNegotiate, negotiatingId }) {
                 {(tech.skills || []).join(" · ")}
               </p>
             </div>
+
             <button
               type="button"
-              className="btn-primary text-xs"
-              disabled={negotiatingId === tech.id}
-              onClick={() => onNegotiate(tech)}
+              className="flex items-center gap-1.5 rounded-lg border border-[#25D366]/30 bg-[#25D366]/10 px-3 py-1.5 text-xs font-semibold text-[#25D366] hover:bg-[#25D366]/20 transition disabled:opacity-50"
+              disabled={whatsappId === tech.id}
+              onClick={() => onWhatsApp(tech)}
             >
-              {negotiatingId === tech.id ? "Negotiating..." : "Start Negotiation"}
+              <MessageCircle className="h-3.5 w-3.5" />
+              {whatsappId === tech.id ? "Starting..." : "Negotiate on WhatsApp"}
             </button>
           </div>
+
           <div className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
             <div>
               <p className="text-muted">Score</p>

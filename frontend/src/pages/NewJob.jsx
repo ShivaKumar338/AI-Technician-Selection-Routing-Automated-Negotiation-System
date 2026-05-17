@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import toast from "react-hot-toast";
-import { createJob, matchJob, negotiateJob } from "../api/jobs";
+import { createJob, matchJob } from "../api/jobs";
+import api from "../api/axios";
 import JobForm from "../components/jobs/JobForm";
 import MatchResults from "../components/jobs/MatchResults";
-import NegotiationModal from "../components/negotiation/NegotiationModal";
 import PageHeader from "../components/ui/PageHeader";
 
 const INITIAL_FORM = {
@@ -21,14 +21,9 @@ export default function NewJob() {
   const [submitting, setSubmitting] = useState(false);
   const [jobId, setJobId] = useState(null);
   const [matches, setMatches] = useState([]);
-  const [negotiatingId, setNegotiatingId] = useState(null);
-  const [modalOpen, setModalOpen] = useState(false);
-  const [negotiationResult, setNegotiationResult] = useState(null);
-  const [negotiationLoading, setNegotiationLoading] = useState(false);
+  const [whatsappId, setWhatsappId] = useState(null);
 
-  const onChange = (field, value) => {
-    setForm((prev) => ({ ...prev, [field]: value }));
-  };
+  const onChange = (field, value) => setForm((prev) => ({ ...prev, [field]: value }));
 
   const onSubmit = async (event) => {
     event.preventDefault();
@@ -45,7 +40,6 @@ export default function NewJob() {
       const job = await createJob(payload);
       setJobId(job.id);
       toast.success("Job created");
-
       const matchData = await matchJob(job.id);
       setMatches(matchData.technicians || []);
       toast.success("Top technicians matched");
@@ -56,29 +50,17 @@ export default function NewJob() {
     }
   };
 
-  const onNegotiate = async (tech) => {
-    if (!jobId) return;
-    setNegotiatingId(tech.id);
-    setNegotiationLoading(true);
-    setModalOpen(true);
-    setNegotiationResult(null);
+  const onWhatsApp = async (tech) => {
+    if (!jobId) return toast.error("Create a job first");
+    setWhatsappId(tech.id);
     try {
-      const result = await negotiateJob(jobId, tech.id);
-      setNegotiationResult(result);
-      toast.success(`Agreed at ${result.agreed_price} INR with ${result.technician_name}`);
-    } catch (error) {
-      toast.error(error.message);
-      setModalOpen(false);
-    } finally {
-      setNegotiatingId(null);
-      setNegotiationLoading(false);
-    }
-  };
-
-  const closeModal = () => {
-    setModalOpen(false);
-    if (negotiationResult && jobId) {
+      const { data } = await api.post(`/api/negotiate/${jobId}?tech_id=${tech.id}`);
+      toast.success(`WhatsApp negotiation started with ${data.technician_name}`);
       navigate(`/jobs/${jobId}`);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || err.message);
+    } finally {
+      setWhatsappId(null);
     }
   };
 
@@ -86,28 +68,20 @@ export default function NewJob() {
     <div className="space-y-6">
       <PageHeader
         title="Dispatch New Job"
-        subtitle="Create a service request and let AI agents negotiate the best deal"
+        subtitle="Create a service request and let AI negotiate via WhatsApp"
       />
       <div className="grid gap-6 xl:grid-cols-2">
         <JobForm form={form} onChange={onChange} onSubmit={onSubmit} submitting={submitting} />
         <div className="card-surface p-6">
           <h2 className="mb-1 text-lg font-semibold text-foreground">Top Matched Technicians</h2>
-          <p className="mb-4 text-sm text-muted">
-            Ranked by skill match, distance, and rating
-          </p>
+          <p className="mb-4 text-sm text-muted">Ranked by skill match, distance, and rating</p>
           <MatchResults
             matches={matches}
-            onNegotiate={onNegotiate}
-            negotiatingId={negotiatingId}
+            onWhatsApp={onWhatsApp}
+            whatsappId={whatsappId}
           />
         </div>
       </div>
-      <NegotiationModal
-        open={modalOpen}
-        onClose={closeModal}
-        result={negotiationResult}
-        loading={negotiationLoading}
-      />
     </div>
   );
 }
