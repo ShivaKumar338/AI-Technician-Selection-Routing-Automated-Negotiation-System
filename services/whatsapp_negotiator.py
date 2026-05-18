@@ -170,27 +170,36 @@ class WhatsAppNegotiator:
             logger.error("[%s] send_message failed: %s", self._label, resp.get("error"))
         return ok
 
-    async def read_last_incoming_message(self) -> tuple[Optional[str], int]:
+    async def read_last_incoming_message(self) -> tuple[Optional[str], int, str]:
+        """Returns (text, incoming_count, fingerprint).
+        Fingerprint = 'total:incoming_count:last_text' — unique even for repeated messages."""
         resp = await self._send({"action": "read_last"}, timeout=10.0)
-        return resp.get("text"), resp.get("count", 0)
+        return resp.get("text"), resp.get("count", 0), resp.get("fingerprint", "0:0:")
 
     async def wait_for_reply(
         self,
-        after_count: int = 0,
+        after_fingerprint: str = "",
         timeout_sec: int = REPLY_WAIT_TIMEOUT,
-    ) -> tuple[Optional[str], int]:
+    ) -> tuple[Optional[str], str]:
+        """
+        Poll until a NEW incoming message appears.
+        Uses fingerprint (total:count:text) so even repeated identical texts are detected.
+        Returns (reply_text, new_fingerprint).
+        """
         deadline = asyncio.get_event_loop().time() + timeout_sec
         while asyncio.get_event_loop().time() < deadline:
-            text, count = await self.read_last_incoming_message()
-            if count > after_count:
-                logger.info(
-                    "[%s] Reply received (count %d→%d): %s",
-                    self._label, after_count, count, (text or "")[:100],
-                )
-                return text, count
+            text, count, fingerprint = await self.read_last_incoming_message()
+            if fingerprint != after_fingerprint and count > 0:
+                # Extra guard: only accept if total DOM count changed OR text changed
+                after_total = int(after_fingerprint.split(":")[0]) if after_fingerprint else 0
+                current_total = int(fingerprint.split(":")[0]) if fingerprint else 0
+                if current_total > after_total or fingerprint != after_fingerprint:
+                    logger.info("[%s] Reply detected fp=%s text=%s",
+                                self._label, fingerprint, (text or "")[:80])
+                    return text, fingerprint
             await asyncio.sleep(REPLY_POLL_INTERVAL)
         logger.warning("[%s] No reply within %ds", self._label, timeout_sec)
-        return None, after_count
+        return None, after_fingerprint
 
     async def get_session_status(self) -> dict:
         alive = self._proc is not None and self._proc.poll() is None

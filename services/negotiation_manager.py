@@ -122,8 +122,8 @@ class NegotiationManager:
 
         # Snapshot existing messages so we don't mistake old texts for replies
         await asyncio.sleep(3)
-        _, last_count = await self.wa.read_last_incoming_message()
-        logger.info("Baseline message count: %d", last_count)
+        _, _, last_fp = await self.wa.read_last_incoming_message()
+        logger.info("Baseline fingerprint: %s", last_fp)
 
         # ── STAGE 1: Availability ─────────────────────────────────────────────
         await self._update_session(sid, status=STAGE_AVAILABILITY)
@@ -137,9 +137,9 @@ class NegotiationManager:
 
         # Re-snapshot after send
         await asyncio.sleep(2)
-        _, last_count = await self.wa.read_last_incoming_message()
+        _, _, last_fp = await self.wa.read_last_incoming_message()
 
-        avail_reply, last_count = await self.wa.wait_for_reply(after_count=last_count)
+        avail_reply, last_fp = await self.wa.wait_for_reply(after_fingerprint=last_fp)
 
         if avail_reply is None:
             logger.warning("[Stage 1] No availability reply — timeout")
@@ -181,14 +181,14 @@ class NegotiationManager:
         logger.info("[Stage 2] Sent price opening: Rs%d", our_offer)
 
         await asyncio.sleep(2)
-        _, last_count = await self.wa.read_last_incoming_message()
+        _, _, last_fp = await self.wa.read_last_incoming_message()
 
         while round_num < NEGOTIATION_ROUNDS:
             round_num += 1
             await self._update_session(sid, current_round=round_num)
 
             # Wait for technician reply
-            reply, last_count = await self.wa.wait_for_reply(after_count=last_count)
+            reply, last_fp = await self.wa.wait_for_reply(after_fingerprint=last_fp)
 
             if reply is None:
                 logger.warning("[Round %d] Timeout", round_num)
@@ -227,7 +227,6 @@ class NegotiationManager:
                     logger.info("[Round %d] Tech Rs%d <= our Rs%d — deal", round_num, their_price, our_offer)
                     break
                 else:
-                    # Counter toward their price (staying within budget)
                     next_offer = compute_our_offer(our_offer, their_price, budget, floor)
                     logger.info("[Round %d] Tech Rs%d → counter Rs%d", round_num, their_price, next_offer)
                     our_offer = next_offer
@@ -241,10 +240,9 @@ class NegotiationManager:
                     await self._log(sid, job_id, round_num, "ai", counter_msg, our_offer=our_offer)
 
                     await asyncio.sleep(2)
-                    _, last_count = await self.wa.read_last_incoming_message()
+                    _, _, last_fp = await self.wa.read_last_incoming_message()
                     continue
             else:
-                # No price extracted — resend our current offer
                 counter_msg = await generate_counter_offer_message(
                     job, technician, our_offer, None, reply, budget
                 )
@@ -254,7 +252,7 @@ class NegotiationManager:
                 await self._log(sid, job_id, round_num, "ai", counter_msg, our_offer=our_offer)
 
                 await asyncio.sleep(2)
-                _, last_count = await self.wa.read_last_incoming_message()
+                _, _, last_fp = await self.wa.read_last_incoming_message()
 
         # ── STAGE 3: Dispatch ─────────────────────────────────────────────────
         if outcome == "agreed" and agreed_price:

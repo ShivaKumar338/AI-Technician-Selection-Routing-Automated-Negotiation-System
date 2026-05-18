@@ -1,4 +1,4 @@
-import { Star, MapPin, BadgeCheck, MessageCircle } from "lucide-react";
+import { Star, BadgeCheck, MessageCircle } from "lucide-react";
 import { formatScore } from "../../utils/format";
 
 export default function MatchResults({ matches, onWhatsApp, whatsappId }) {
@@ -51,9 +51,10 @@ export default function MatchResults({ matches, onWhatsApp, whatsappId }) {
               <Star className="h-4 w-4 text-amber-400" />
               <span>{tech.rating}/5</span>
             </div>
-            <div className="flex items-center gap-1">
-              <MapPin className="h-4 w-4 text-muted" />
-              <span>From ₹{tech.rate_min}</span>
+            <div>
+              <span className="rounded-md bg-[#25D366]/10 px-2 py-0.5 text-xs font-medium text-[#25D366]">
+                Ready to Negotiate
+              </span>
             </div>
           </div>
         </div>

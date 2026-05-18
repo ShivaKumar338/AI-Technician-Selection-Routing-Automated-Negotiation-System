@@ -70,9 +70,11 @@ export default function TechnicianCard({ technician, jobId }) {
       <div className="mt-4 flex items-center justify-between text-sm text-muted">
         <span className="flex items-center gap-1">
           <MapPin className="h-4 w-4" />
-          {technician.lat?.toFixed(4)}, {technician.lng?.toFixed(4)}
+          {technician.lat?.toFixed(3)}, {technician.lng?.toFixed(3)}
         </span>
-        <span className="font-medium text-foreground">From ₹{technician.rate_min}</span>
+        <span className="rounded-md bg-[#25D366]/10 px-2 py-0.5 text-xs font-medium text-[#25D366]">
+          {technician.available ? "Ready to Negotiate" : "Unavailable"}
+        </span>
       </div>
 
       {technician.phone_number && (

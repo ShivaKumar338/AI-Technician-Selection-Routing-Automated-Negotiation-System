@@ -42,60 +42,55 @@ READ_MESSAGES_JS = """
 () => {
     const results = [];
 
-    // Strategy 1: data-testid on message rows
+    // Strategy 1: data-testid msg-container rows
     const rows = document.querySelectorAll(
         '[data-testid="msg-container"], [data-testid="message-container"]'
     );
     if (rows.length > 0) {
-        rows.forEach(row => {
-            // Outgoing messages have data-testid="msg-dblcheck" or "msg-check" (tick icons)
-            // Incoming messages have neither
-            const isOutgoing = !!row.querySelector(
-                '[data-testid="msg-dblcheck"], [data-testid="msg-check"], [data-testid="msg-time"]'
-            ) && row.closest('[class*="message-out"], [class*="msg-out"]') !== null;
-
-            // Simpler: check if the bubble is right-aligned (outgoing) or left-aligned (incoming)
-            // WhatsApp wraps outgoing in a div that has "message-out" somewhere in its class chain
+        rows.forEach((row, idx) => {
             let outgoing = false;
             let el = row;
-            for (let i = 0; i < 6; i++) {
+            for (let i = 0; i < 8; i++) {
                 if (!el) break;
                 const cls = el.className || '';
                 if (cls.includes('message-out') || cls.includes('msg-out')) {
-                    outgoing = true;
-                    break;
+                    outgoing = true; break;
                 }
                 el = el.parentElement;
             }
-
             const spans = row.querySelectorAll('span[dir="ltr"], span[dir="rtl"]');
             let text = '';
             spans.forEach(s => {
                 const t = s.innerText.trim();
-                if (t && t.length > 0 && !t.match(/^[0-9]{1,2}:[0-9]{2}$/)) {
-                    text = t;  // take last non-empty, non-timestamp span
+                if (t && t.length > 0 && !t.match(/^[0-9]{1,2}:[0-9]{2}( [AP]M)?$/)) {
+                    text = t;
                 }
             });
-            if (text) results.push({text, outgoing});
+            // Extract timestamp if available
+            let ts = '';
+            const timeEl = row.querySelector('[data-testid="msg-meta"] span, span[class*="time"]');
+            if (timeEl) ts = timeEl.innerText.trim();
+
+            if (text) results.push({text, outgoing, idx, ts});
         });
         if (results.length > 0) return results;
     }
 
-    // Strategy 2: fallback — all selectable-text spans, guess direction from parent
+    // Strategy 2: fallback selectable-text spans
     const allSpans = document.querySelectorAll('span.selectable-text span[dir]');
-    allSpans.forEach(span => {
+    allSpans.forEach((span, idx) => {
         const text = span.innerText.trim();
-        if (!text || text.match(/^[0-9]{1,2}:[0-9]{2}$/)) return;
+        if (!text || text.match(/^[0-9]{1,2}:[0-9]{2}( [AP]M)?$/)) return;
         let outgoing = false;
         let el = span;
-        for (let i = 0; i < 10; i++) {
+        for (let i = 0; i < 12; i++) {
             if (!el) break;
             const cls = el.className || '';
             if (cls.includes('message-out') || cls.includes('msg-out')) { outgoing = true; break; }
             if (cls.includes('message-in') || cls.includes('msg-in')) { outgoing = false; break; }
             el = el.parentElement;
         }
-        results.push({text, outgoing});
+        results.push({text, outgoing, idx, ts: ''});
     });
     return results;
 }
@@ -324,18 +319,27 @@ def main(session_dir: str):
                 elif action == "read_last":
                     try:
                         all_msgs = page.evaluate(READ_MESSAGES_JS)
-                        # Filter to incoming only
-                        incoming = [m for m in (all_msgs or []) if not m.get("outgoing")]
+                        all_msgs = all_msgs or []
+                        incoming = [m for m in all_msgs if not m.get("outgoing")]
+                        total = len(all_msgs)  # total DOM messages (outgoing + incoming)
                         if incoming:
                             last = incoming[-1]["text"].strip()
-                            send({"ok": True, "text": last or None, "count": len(incoming)})
-                            logger.info("read_last: %d incoming msgs, last: %s", len(incoming), last[:60] if last else "None")
+                            # fingerprint = total DOM count + incoming count + last text
+                            # This detects new messages even when text repeats
+                            fingerprint = f"{total}:{len(incoming)}:{last}"
+                            send({"ok": True, "text": last or None,
+                                  "count": len(incoming), "total": total,
+                                  "fingerprint": fingerprint})
+                            logger.info("read_last: %d incoming / %d total, last: %s",
+                                        len(incoming), total, last[:60] if last else "None")
                         else:
-                            send({"ok": True, "text": None, "count": 0})
-                            logger.info("read_last: no incoming messages found (total msgs: %d)", len(all_msgs or []))
+                            send({"ok": True, "text": None, "count": 0,
+                                  "total": total, "fingerprint": f"{total}:0:"})
+                            logger.info("read_last: no incoming (total DOM msgs: %d)", total)
                     except Exception as exc:
                         logger.error("read_last failed: %s", exc)
-                        send({"ok": True, "text": None, "count": 0})
+                        send({"ok": True, "text": None, "count": 0,
+                              "total": 0, "fingerprint": "0:0:"})
 
                 elif action == "debug_messages":
                     # Returns ALL messages (incoming + outgoing) for diagnosis
