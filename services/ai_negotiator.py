@@ -1,14 +1,15 @@
 """
 AI Negotiation Engine.
 
-Role: We are the PLATFORM negotiating with a technician.
-Goal: Get the technician to accept the LOWEST price possible, strictly under customer budget.
+3-stage flow:
+  STAGE 1 — Availability check (ask about visit date/time)
+  STAGE 2 — Price negotiation (start ONLY after availability confirmed)
+  STAGE 3 — Dispatch (send full customer details after deal closes)
 
-Strategy:
-- Never reveal customer budget to technician
-- Start at (budget - 200), negotiate upward slowly only if needed
-- Only go up if technician's counter is within budget
-- Never exceed budget under any circumstance
+Pricing rules:
+  - Never reveal customer budget to technician
+  - Start at (budget - 200), move up slowly only if needed
+  - Never exceed budget
 """
 import asyncio
 import logging
@@ -33,7 +34,7 @@ def _get_model():
     return _gemini_model
 
 
-# ── Price extraction ──────────────────────────────────────────────────────────
+# ── Parsing helpers ───────────────────────────────────────────────────────────
 
 def extract_price_from_reply(text: str) -> Optional[int]:
     text = text.lower().replace(",", "")
@@ -50,30 +51,45 @@ def is_rejection(text: str) -> bool:
     keywords = [
         "not available", "not interested", "can't take", "cannot take",
         "busy", "no thanks", "decline", "reject", "unavailable",
-        "not possible", "won't do", "will not", "not coming"
+        "not possible", "won't do", "will not", "not coming",
+        "can't come", "cannot come", "not free",
     ]
     lower = text.lower()
     return any(k in lower for k in keywords)
 
 
+def is_availability_confirmed(text: str) -> bool:
+    """
+    Returns True if technician confirmed they are available for the slot.
+    Must NOT have a rejection keyword.
+    """
+    if is_rejection(text):
+        return False
+    lower = text.lower()
+    confirm_words = [
+        "available", "yes", "ok", "okay", "sure", "confirmed",
+        "will come", "i'll come", "coming", "can come", "i can",
+        "haan", "ha", "fine", "alright", "no problem", "ready",
+    ]
+    return any(w in lower for w in confirm_words)
+
+
 def is_acceptance(text: str, our_offer: int) -> bool:
-    """
-    True only if technician clearly accepted without quoting a higher price.
-    """
+    """True only if technician clearly accepted our price offer."""
     lower = text.lower()
 
-    # Strong phrases — always acceptance if no higher price mentioned
-    strong = ["deal", "agreed", "confirmed", "i accept", "i'll do it",
-              "i will do it", "ok deal", "okay deal", "done deal",
-              "that works", "sounds good", "let's do it", "i'm in",
-              "will come", "i'll come", "coming"]
+    strong = [
+        "deal", "agreed", "confirmed", "i accept", "i'll do it",
+        "i will do it", "ok deal", "okay deal", "done deal",
+        "that works", "sounds good", "let's do it", "i'm in",
+        "will come", "i'll come", "coming",
+    ]
     for phrase in strong:
         if phrase in lower:
             price = extract_price_from_reply(text)
             if price is None or price <= our_offer:
                 return True
 
-    # Weak words (ok/yes) — only accept if no price mentioned or price matches ours
     weak = ["ok", "okay", "fine", "sure", "yes", "alright", "haan", "done"]
     for word in weak:
         if re.search(rf'\b{word}\b', lower):
@@ -86,32 +102,16 @@ def is_acceptance(text: str, our_offer: int) -> bool:
     return False
 
 
-def compute_our_offer(
-    our_last_offer: int,
-    their_offer: int,
-    budget: int,
-    floor: int,
-) -> int:
-    """
-    Given technician's counter-offer, compute our next offer.
-
-    Logic:
-    - If their offer > budget: we can't go there. Nudge up by 50 from our last, stay under budget.
-    - If their offer <= budget: move halfway between our last offer and their offer (but stay <= budget).
-    - Never go below floor, never exceed budget.
-    """
+def compute_our_offer(our_last_offer: int, their_offer: int, budget: int, floor: int) -> int:
     if their_offer > budget:
-        # They're asking more than budget — inch up slightly to show willingness, stay under budget
         nudge = min(50, budget - our_last_offer)
         offer = our_last_offer + nudge
     else:
-        # Their ask is within budget — meet halfway
         offer = our_last_offer + int((their_offer - our_last_offer) * 0.5)
-
     return max(floor, min(offer, budget))
 
 
-# ── Gemini calls ──────────────────────────────────────────────────────────────
+# ── Gemini ────────────────────────────────────────────────────────────────────
 
 def _call_gemini_sync(prompt: str) -> str:
     model = _get_model()
@@ -120,7 +120,7 @@ def _call_gemini_sync(prompt: str) -> str:
     try:
         resp = model.generate_content(
             prompt,
-            generation_config={"temperature": 0.7, "max_output_tokens": 120},
+            generation_config={"temperature": 0.7, "max_output_tokens": 150},
         )
         return (resp.text or "").strip()
     except Exception as exc:
@@ -132,30 +132,71 @@ async def _call_gemini(prompt: str) -> str:
     return await asyncio.to_thread(_call_gemini_sync, prompt)
 
 
-# ── Message generators ────────────────────────────────────────────────────────
+# ── Stage 1: Availability check ───────────────────────────────────────────────
 
-async def generate_opening_message(job: dict, technician: dict, our_offer: int) -> str:
-    prompt = f"""You are a job coordinator sending a WhatsApp message to a technician.
+async def generate_availability_message(job: dict, technician: dict) -> str:
+    description = (job.get("description") or "").strip()
+    visit_date = (job.get("visit_date") or "").strip()
+    visit_time = (job.get("visit_time") or "").strip()
 
-Technician name: {technician['name']}
+    issue_line = f"Issue: {description}" if description else ""
+    date_line = f"Visit Date: {visit_date}" if visit_date else ""
+    time_line = f"Visit Time: {visit_time}" if visit_time else ""
+    slot_parts = [p for p in [date_line, time_line] if p]
+    slot_block = "\n".join(slot_parts) if slot_parts else ""
+
+    prompt = f"""You are a job coordinator sending a WhatsApp message to a technician to check availability.
+
+Technician: {technician['name']}
 Job type: {job['problem_type']}
-Your offer: ₹{our_offer}
+{issue_line}
+{slot_block}
 
-Write a short, friendly message (2 sentences max):
-- Mention the job type
-- State your offer of ₹{our_offer}
-- Ask if they are available
-- Do NOT mention any budget or customer details
-- Plain text only, no emojis, no markdown
+Write a short, friendly WhatsApp message (3-4 lines):
+- Greet by name
+- Mention the job type and issue briefly
+- Mention the visit date/time if provided
+- Ask if they are available for this slot
+- Do NOT mention price or budget
+- Plain text only, no markdown
 
-Write only the message text."""
+Write only the message."""
 
     msg = await _call_gemini(prompt)
     if not msg:
-        msg = (
-            f"Hi {technician['name']}, we have a {job['problem_type']} job available "
-            f"and can offer ₹{our_offer}. Are you available?"
-        )
+        parts = [f"Hi {technician['name']}, we have a {job['problem_type']} job."]
+        if description:
+            parts.append(f"Issue: {description}.")
+        if visit_date or visit_time:
+            slot = " ".join(filter(None, [visit_date, f"at {visit_time}" if visit_time else ""]))
+            parts.append(f"Visit: {slot}.")
+        parts.append("Are you available for this slot?")
+        msg = " ".join(parts)
+    return msg
+
+
+# ── Stage 2: Price negotiation ────────────────────────────────────────────────
+
+async def generate_price_opening(job: dict, technician: dict, our_offer: int) -> str:
+    prompt = f"""You are a job coordinator. The technician just confirmed availability.
+Now start price negotiation.
+
+Technician: {technician['name']}
+Job: {job['problem_type']}
+Your offer: ₹{our_offer}
+
+Write 1-2 sentences:
+- Thank them for confirming
+- State your offer of ₹{our_offer} for this job
+- Ask if they can accept
+- Do NOT mention customer budget
+- Plain text only
+
+Write only the message."""
+
+    msg = await _call_gemini(prompt)
+    if not msg:
+        msg = f"Great, thanks for confirming! We can offer ₹{our_offer} for this {job['problem_type']} job. Can you accept this?"
     return msg
 
 
@@ -170,7 +211,7 @@ async def generate_counter_offer_message(
     above_budget = their_offer is not None and their_offer > budget
 
     if above_budget:
-        context = f"Their asking price ₹{their_offer} is too high for this job."
+        context = f"Their asking price ₹{their_offer} is too high."
         instruction = f"Politely say that's too high and counter with ₹{our_offer}."
     elif their_offer:
         context = f"They asked for ₹{their_offer}."
@@ -188,8 +229,8 @@ Technician said: "{their_reply}"
 Rules:
 - 1-2 sentences only
 - State your offer of ₹{our_offer} clearly
-- Sound like a real person, not a bot
-- Do NOT mention any budget limit or customer details
+- Sound like a real person
+- Do NOT mention budget limit or customer details
 - Plain text only
 
 Write only the message."""
@@ -197,24 +238,47 @@ Write only the message."""
     msg = await _call_gemini(prompt)
     if not msg:
         if above_budget:
-            msg = f"That's a bit high for us, we can offer ₹{our_offer} for this {job['problem_type']} job. Would that work?"
+            msg = f"That's a bit high, we can offer ₹{our_offer} for this job. Would that work?"
         else:
             msg = f"We can do ₹{our_offer} for this job. Does that work for you?"
     return msg
 
 
-async def generate_agreement_message(technician: dict, agreed_price: int, job: dict) -> str:
-    prompt = f"""Write a short WhatsApp confirmation message.
-Technician: {technician['name']}, Job: {job['problem_type']}, Price: ₹{agreed_price}
-2 sentences: confirm the deal and say customer details follow. Plain text only."""
+# ── Stage 3: Dispatch ─────────────────────────────────────────────────────────
 
-    msg = await _call_gemini(prompt)
-    if not msg:
-        msg = (
-            f"Great, deal confirmed at ₹{agreed_price} for the {job['problem_type']} job! "
-            f"We'll send you the customer details shortly."
-        )
-    return msg
+async def generate_dispatch_message(job: dict, technician: dict, agreed_price: int) -> str:
+    """
+    Final message sent after deal closes — full customer details for the technician.
+    """
+    name = job.get("customer_name") or "Customer"
+    phone = job.get("customer_phone") or "—"
+    address = job.get("customer_address") or "—"
+    description = (job.get("description") or "").strip()
+    visit_date = (job.get("visit_date") or "").strip()
+    visit_time = (job.get("visit_time") or "").strip()
+
+    visit_str = " ".join(filter(None, [visit_date, f"at {visit_time}" if visit_time else ""]))
+
+    # Build dispatch message directly — no Gemini needed, must be exact
+    lines = [
+        "Job Confirmed",
+        "",
+        f"Customer: {name}",
+        f"Phone: {phone}",
+        f"Address: {address}",
+    ]
+    if description:
+        lines += ["", f"Issue: {description}"]
+    if visit_str:
+        lines += [f"Visit: {visit_str}"]
+    lines += [
+        "",
+        f"Job: {job['problem_type']}",
+        f"Agreed Price: Rs {agreed_price}",
+        "",
+        "Please be on time. Thank you!",
+    ]
+    return "\n".join(lines)
 
 
 async def generate_rejection_response(technician: dict, job: dict) -> str:

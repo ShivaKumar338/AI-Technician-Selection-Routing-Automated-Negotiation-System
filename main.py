@@ -208,10 +208,17 @@ def run_tech_agent(problem_type, floor, ceiling, round_num, customer_last_offer)
 
 class JobCreate(BaseModel):
     problem_type: str
-    customer_lat: float
-    customer_lng: float
     urgency: int = Field(ge=1, le=5)
     customer_budget: int = Field(gt=0)
+    description: Optional[str] = None
+    customer_name: Optional[str] = None
+    customer_phone: Optional[str] = None
+    customer_address: Optional[str] = None
+    visit_date: Optional[str] = None   # ISO date string "YYYY-MM-DD"
+    visit_time: Optional[str] = None   # "HH:MM"
+    # lat/lng kept for future geocoding; default to Hyderabad city centre
+    customer_lat: float = 17.385
+    customer_lng: float = 78.4867
 
 
 class TechnicianCreate(BaseModel):
@@ -275,6 +282,12 @@ async def create_job(body: JobCreate):
         "customer_lng": body.customer_lng,
         "urgency": body.urgency,
         "customer_budget": body.customer_budget,
+        "description": (body.description or "").strip() or None,
+        "customer_name": (body.customer_name or "").strip() or None,
+        "customer_phone": (body.customer_phone or "").strip() or None,
+        "customer_address": (body.customer_address or "").strip() or None,
+        "visit_date": body.visit_date or None,
+        "visit_time": body.visit_time or None,
         "status": "pending",
         "assigned_tech_id": None,
         "agreed_price": None,
@@ -393,9 +406,27 @@ async def get_job(job_id: str):
         job["technician_name"] = name_map.get(tech_id)
     else:
         job["technician_name"] = None
-    logs = await client.table("negotiation_logs").select("*").eq("job_id", job_id).order("round").execute()
-    job["negotiation_logs"] = logs.data or []
     return job
+
+
+@app.get("/jobs/{job_id}/messages")
+async def get_job_messages(job_id: str):
+    """Live WhatsApp negotiation messages for a job — poll this every 3s for live chat."""
+    client = await get_supabase()
+    result = await client.table("whatsapp_messages").select("*").eq(
+        "job_id", job_id
+    ).order("sent_at").execute()
+    return {"messages": result.data or [], "count": len(result.data or [])}
+
+
+@app.get("/jobs/{job_id}/messages")
+async def get_job_messages(job_id: str):
+    """Live WhatsApp negotiation messages for a job — poll this every 3s for live chat."""
+    client = await get_supabase()
+    result = await client.table("whatsapp_messages").select("*").eq(
+        "job_id", job_id
+    ).order("sent_at").execute()
+    return {"messages": result.data or [], "count": len(result.data or [])}
 
 
 @app.get("/technicians")

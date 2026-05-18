@@ -101,8 +101,28 @@ class WhatsAppNegotiator:
 
     def _send_sync(self, cmd: dict, timeout: float = 35.0) -> dict:
         with self._send_lock:
-            if not self._proc or self._proc.poll() is not None:
-                raise RuntimeError(f"[{self._label}] Worker is not running")
+            # Auto-restart worker if it died
+            if self._proc is None or self._proc.poll() is not None:
+                logger.warning("[%s] Worker is dead — restarting", self._label)
+                self._startup_event.clear()
+                self._ready = False
+                Path(self._session_dir).mkdir(parents=True, exist_ok=True)
+                self._proc = subprocess.Popen(
+                    [sys.executable, str(WORKER_SCRIPT), self._session_dir],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=None,
+                    bufsize=0,
+                )
+                self._reader_thread = threading.Thread(
+                    target=self._reader_loop, daemon=True,
+                    name=f"wa-reader-{self._label}-restart"
+                )
+                self._reader_thread.start()
+                # Wait for ready
+                self._startup_event.wait(timeout=90)
+                self._ready = True
+                logger.info("[%s] Worker restarted", self._label)
 
             event = threading.Event()
             self._pending = {"event": event, "result": None}

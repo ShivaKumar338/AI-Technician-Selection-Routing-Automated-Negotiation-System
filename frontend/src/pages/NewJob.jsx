@@ -9,10 +9,14 @@ import PageHeader from "../components/ui/PageHeader";
 
 const INITIAL_FORM = {
   problem_type: "AC",
-  customer_lat: 17.385,
-  customer_lng: 78.4867,
+  customer_name: "",
+  customer_phone: "",
+  customer_address: "",
+  visit_date: "",
+  visit_time: "",
   urgency: 3,
-  customer_budget: 1500,
+  customer_budget: "",
+  description: "",
 };
 
 export default function NewJob() {
@@ -32,10 +36,15 @@ export default function NewJob() {
     try {
       const payload = {
         problem_type: form.problem_type,
-        customer_lat: Number(form.customer_lat),
-        customer_lng: Number(form.customer_lng),
         urgency: Number(form.urgency),
         customer_budget: Number(form.customer_budget),
+        customer_name: form.customer_name || null,
+        customer_phone: form.customer_phone || null,
+        customer_address: form.customer_address || null,
+        visit_date: form.visit_date || null,
+        visit_time: form.visit_time || null,
+        description: form.description || null,
+        // lat/lng default to Hyderabad on backend — no need to send
       };
       const job = await createJob(payload);
       setJobId(job.id);
@@ -68,7 +77,7 @@ export default function NewJob() {
     <div className="space-y-6">
       <PageHeader
         title="Dispatch New Job"
-        subtitle="Create a service request and let AI negotiate via WhatsApp"
+        subtitle="Fill in customer details and let AI negotiate via WhatsApp"
       />
       <div className="grid gap-6 xl:grid-cols-2">
         <JobForm form={form} onChange={onChange} onSubmit={onSubmit} submitting={submitting} />

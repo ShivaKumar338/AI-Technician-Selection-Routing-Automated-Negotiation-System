@@ -190,17 +190,41 @@ def main(session_dir: str):
 
     logger.info("Starting Playwright (sync) with session: %s", session_dir)
 
+    # Kill only the Chromium process that's locking OUR session directory
+    # (not the user's regular Chrome browser)
+    import subprocess as _sp, psutil as _ps, os as _os
+    session_abs = _os.path.abspath(session_dir)
+    try:
+        for proc in _ps.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                name = (proc.info['name'] or '').lower()
+                cmdline = ' '.join(proc.info['cmdline'] or [])
+                if 'chrome' in name and session_abs in cmdline:
+                    logger.info("Killing stale Chromium pid=%d locking %s", proc.pid, session_dir)
+                    proc.kill()
+            except (_ps.NoSuchProcess, _ps.AccessDenied):
+                pass
+    except Exception as e:
+        logger.warning("Could not check for stale Chromium: %s", e)
+    time.sleep(1)
+
     with sync_playwright() as pw:
-        context = pw.chromium.launch_persistent_context(
-            user_data_dir=session_dir,
-            headless=False,
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-web-security",  # needed for clipboard API
-            ],
-            viewport={"width": 1280, "height": 900},
-        )
+        try:
+            context = pw.chromium.launch_persistent_context(
+                user_data_dir=session_dir,
+                headless=False,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-web-security",
+                ],
+                viewport={"width": 1280, "height": 900},
+            )
+        except Exception as exc:
+            logger.error("Failed to launch browser: %s", exc)
+            send({"event": "ready", "ok": False, "error": str(exc)})
+            return
+
         page = context.pages[0] if context.pages else context.new_page()
 
         # Grant clipboard permissions
@@ -209,7 +233,12 @@ def main(session_dir: str):
         except Exception:
             pass
 
-        page.goto(WA_URL, wait_until="domcontentloaded")
+        try:
+            page.goto(WA_URL, wait_until="domcontentloaded")
+        except Exception as exc:
+            logger.error("Failed to navigate to WhatsApp: %s", exc)
+            send({"event": "ready", "ok": False, "error": str(exc)})
+            return
 
         logger.info("Waiting for WhatsApp Web to load (scan QR if needed)...")
         try:
@@ -324,9 +353,19 @@ def main(session_dir: str):
                 break
             except Exception as exc:
                 logger.error("Command error: %s", exc)
+                # Check if browser died
+                try:
+                    page.title()  # will throw if browser is gone
+                except Exception:
+                    logger.error("Browser appears to have crashed — exiting worker")
+                    send({"ok": False, "error": "browser_crashed"})
+                    break
                 send({"ok": False, "error": str(exc)})
 
-        context.close()
+        try:
+            context.close()
+        except Exception:
+            pass
         logger.info("Worker exiting cleanly")
 
 
